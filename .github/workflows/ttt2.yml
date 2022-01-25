@@ -2,8 +2,6 @@ name: Call a reusable workflow and use its outputs
 
 on:
   push:
-    branches:
-      - "master"
   pull_request:
 
 jobs:
