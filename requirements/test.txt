@@ -4,6 +4,7 @@ pytest>=6.0
 pytest-cov>2.10
 # pytest-flake8
 pytest-doctestplus
+pytest-timeout
 check-manifest
 twine>=3.2
 mypy>=0.790
