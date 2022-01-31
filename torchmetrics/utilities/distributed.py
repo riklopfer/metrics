@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from typing import Any, List, Optional
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+PL_LOGGER = logging.getLogger('pytorch_lightning')
 
 def reduce(to_reduce: Tensor, reduction: str) -> Tensor:
     """Reduces a given tensor by a given reduction method.
@@ -106,6 +108,7 @@ def gather_all_tensors(result: Tensor, group: Optional[Any] = None) -> List[Tens
         gathered_result: list with size equal to the process group where
             gathered_result[i] corresponds to result tensor from process i
     """
+    PL_LOGGER.info(f"gather_all_tensors::result.shape={result.shape}")
     if group is None:
         group = torch.distributed.group.WORLD
 
@@ -120,6 +123,7 @@ def gather_all_tensors(result: Tensor, group: Optional[Any] = None) -> List[Tens
         return _simple_gather_all_tensors(result, group, world_size)
 
     # 1. Gather sizes of all tensors
+    PL_LOGGER.info(f"gather_all_tensors::gathering shapes")
     local_size = torch.tensor(result.shape, device=result.device)
     local_sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
     torch.distributed.all_gather(local_sizes, local_size, group=group)
@@ -127,19 +131,24 @@ def gather_all_tensors(result: Tensor, group: Optional[Any] = None) -> List[Tens
     all_sizes_equal = all(all(ls == max_size) for ls in local_sizes)
 
     # 2. If shapes are all the same, then do a simple gather:
+    PL_LOGGER.info(f"gather_all_tensors::all_sizes_equal={all_sizes_equal}")
     if all_sizes_equal:
         return _simple_gather_all_tensors(result, group, world_size)
 
     # 3. If not, we need to pad each local tensor to maximum size, gather and then truncate
     pad_dims = []
     pad_by = (max_size - local_size).detach().cpu()
+    PL_LOGGER.info(f"gather_all_tensors::pad_by={pad_by}")
     for val in reversed(pad_by):
         pad_dims.append(0)
         pad_dims.append(val.item())
     result_padded = F.pad(result, pad_dims)
     gathered_result = [torch.zeros_like(result_padded) for _ in range(world_size)]
+    PL_LOGGER.info(f"gather_all_tensors::doing all_ather")
     torch.distributed.all_gather(gathered_result, result_padded, group)
+    PL_LOGGER.info(f"gather_all_tensors::slicing and dicing")
     for idx, item_size in enumerate(local_sizes):
         slice_param = [slice(dim_size) for dim_size in item_size]
         gathered_result[idx] = gathered_result[idx][slice_param]
+    PL_LOGGER.info(f"gather_all_tensors::done")
     return gathered_result

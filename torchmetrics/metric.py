@@ -13,6 +13,7 @@
 # limitations under the License.
 import functools
 import inspect
+import logging
 import operator as op
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
@@ -22,7 +23,6 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Sequence, Uni
 import torch
 from torch import Tensor
 from torch.nn import Module
-
 from torchmetrics.utilities import apply_to_collection, rank_zero_warn
 from torchmetrics.utilities.data import (
     _flatten,
@@ -36,6 +36,8 @@ from torchmetrics.utilities.data import (
 from torchmetrics.utilities.distributed import gather_all_tensors
 from torchmetrics.utilities.exceptions import TorchMetricsUserError
 from torchmetrics.utilities.imports import _LIGHTNING_AVAILABLE, _compare_version
+
+PL_LOGGER = logging.getLogger('pytorch_lightning')
 
 
 def jit_distributed_available() -> bool:
@@ -81,13 +83,13 @@ class Metric(Module, ABC):
     higher_is_better: Optional[bool] = None
 
     def __init__(
-        self,
-        compute_on_step: bool = True,
-        dist_sync_on_step: bool = False,
-        process_group: Optional[Any] = None,
-        dist_sync_fn: Callable = None,
+            self,
+            compute_on_step: bool = True,
+            dist_sync_on_step: bool = False,
+            process_group: Optional[Any] = None,
+            dist_sync_fn: Callable = None,
     ) -> None:
-        super().__init__()
+        Module.__init__(self)
 
         # see (https://github.com/pytorch/pytorch/blob/3e6bb5233f9ca2c5aa55d9cda22a7ee85439aa6e/
         # torch/nn/modules/module.py#L227)
@@ -113,18 +115,19 @@ class Metric(Module, ABC):
         # initialize state
         self._defaults: Dict[str, Union[List, Tensor]] = {}
         self._persistent: Dict[str, bool] = {}
-        self._reductions: Dict[str, Union[str, Callable[[Union[List[Tensor], Tensor]], Tensor], None]] = {}
+        self._reductions: Dict[
+            str, Union[str, Callable[[Union[List[Tensor], Tensor]], Tensor], None]] = {}
 
         # state management
         self._is_synced = False
         self._cache: Optional[Dict[str, Union[List[Tensor], Tensor]]] = None
 
     def add_state(
-        self,
-        name: str,
-        default: Union[list, Tensor],
-        dist_reduce_fx: Optional[Union[str, Callable]] = None,
-        persistent: bool = False,
+            self,
+            name: str,
+            default: Union[list, Tensor],
+            dist_reduce_fx: Optional[Union[str, Callable]] = None,
+            persistent: bool = False,
     ) -> None:
         """Adds metric state variable. Only used by subclasses.
 
@@ -164,7 +167,8 @@ class Metric(Module, ABC):
                 If ``dist_reduce_fx`` is not callable or one of ``"mean"``, ``"sum"``, ``"cat"``, ``None``.
         """
         if not isinstance(default, (Tensor, list)) or (isinstance(default, list) and default):
-            raise ValueError("state variable must be a tensor or any empty list (where you can append tensors)")
+            raise ValueError(
+                "state variable must be a tensor or any empty list (where you can append tensors)")
 
         if dist_reduce_fx == "sum":
             dist_reduce_fx = dim_zero_sum
@@ -177,7 +181,8 @@ class Metric(Module, ABC):
         elif dist_reduce_fx == "cat":
             dist_reduce_fx = dim_zero_cat
         elif dist_reduce_fx is not None and not callable(dist_reduce_fx):
-            raise ValueError("`dist_reduce_fx` must be callable or one of ['mean', 'sum', 'cat', None]")
+            raise ValueError(
+                "`dist_reduce_fx` must be callable or one of ['mean', 'sum', 'cat', None]")
 
         if isinstance(default, Tensor):
             default = default.contiguous()
@@ -228,14 +233,17 @@ class Metric(Module, ABC):
 
             return self._forward_cache
 
-    def _sync_dist(self, dist_sync_fn: Callable = gather_all_tensors, process_group: Optional[Any] = None) -> None:
+    def _sync_dist(self, dist_sync_fn: Callable = gather_all_tensors,
+                   process_group: Optional[Any] = None) -> None:
         input_dict = {attr: getattr(self, attr) for attr in self._reductions}
 
         for attr, reduction_fn in self._reductions.items():
             # pre-concatenate metric states that are lists to reduce number of all_gather operations
-            if reduction_fn == dim_zero_cat and isinstance(input_dict[attr], list) and len(input_dict[attr]) > 1:
+            if reduction_fn == dim_zero_cat and isinstance(input_dict[attr], list) and len(
+                    input_dict[attr]) > 1:
                 input_dict[attr] = [dim_zero_cat(input_dict[attr])]
 
+        PL_LOGGER.info("sync_dist::apply_to_collection")
         output_dict = apply_to_collection(
             input_dict,
             Tensor,
@@ -243,6 +251,7 @@ class Metric(Module, ABC):
             group=process_group or self.process_group,
         )
 
+        PL_LOGGER.info("sync_dist::do reductions")
         for attr, reduction_fn in self._reductions.items():
             # pre-processing ops (stack or flatten for inputs)
             if isinstance(output_dict[attr][0], Tensor):
@@ -252,8 +261,10 @@ class Metric(Module, ABC):
 
             if not (callable(reduction_fn) or reduction_fn is None):
                 raise TypeError("reduction_fn must be callable or None")
-            reduced = reduction_fn(output_dict[attr]) if reduction_fn is not None else output_dict[attr]
+            reduced = reduction_fn(output_dict[attr]) if reduction_fn is not None else output_dict[
+                attr]
             setattr(self, attr, reduced)
+        PL_LOGGER.info("sync_dist::done")
 
     def _wrap_update(self, update: Callable) -> Callable:
         @functools.wraps(update)
@@ -265,11 +276,11 @@ class Metric(Module, ABC):
         return wrapped_func
 
     def sync(
-        self,
-        dist_sync_fn: Optional[Callable] = None,
-        process_group: Optional[Any] = None,
-        should_sync: bool = True,
-        distributed_available: Optional[Callable] = jit_distributed_available,
+            self,
+            dist_sync_fn: Optional[Callable] = None,
+            process_group: Optional[Any] = None,
+            should_sync: bool = True,
+            distributed_available: Optional[Callable] = jit_distributed_available,
     ) -> None:
         """Sync function for manually controlling when metrics states should be synced across processes.
 
@@ -287,6 +298,7 @@ class Metric(Module, ABC):
 
         is_distributed = distributed_available() if callable(distributed_available) else None
 
+        PL_LOGGER.info(f"sync::begin")
         if not should_sync or not is_distributed:
             return
 
@@ -294,10 +306,13 @@ class Metric(Module, ABC):
             dist_sync_fn = gather_all_tensors
 
         # cache prior to syncing
+        PL_LOGGER.info("sync::caching")
         self._cache = {attr: getattr(self, attr) for attr in self._defaults}
 
         # sync
+        PL_LOGGER.info("sync::doing sync")
         self._sync_dist(dist_sync_fn, process_group=process_group)
+        PL_LOGGER.info("sync::done")
         self._is_synced = True
 
     def unsync(self, should_unsync: bool = True) -> None:
@@ -324,12 +339,12 @@ class Metric(Module, ABC):
 
     @contextmanager
     def sync_context(
-        self,
-        dist_sync_fn: Optional[Callable] = None,
-        process_group: Optional[Any] = None,
-        should_sync: bool = True,
-        should_unsync: bool = True,
-        distributed_available: Optional[Callable] = jit_distributed_available,
+            self,
+            dist_sync_fn: Optional[Callable] = None,
+            process_group: Optional[Any] = None,
+            should_sync: bool = True,
+            should_unsync: bool = True,
+            distributed_available: Optional[Callable] = jit_distributed_available,
     ) -> Generator:
         """Context manager to synchronize the states between processes when running in a distributed setting and
         restore the local cache states after yielding.
@@ -369,17 +384,23 @@ class Metric(Module, ABC):
 
             # return cached value
             if self._computed is not None:
+                PL_LOGGER.info("Metric::got from cache")
                 return self._computed
 
             # compute relies on the sync context manager to gather the states across processes and apply reduction
             # if synchronization happened, the current rank accumulated states will be restored to keep
             # accumulation going if ``should_unsync=True``,
+            PL_LOGGER.info("Metric::with self.sync_context")
             with self.sync_context(
-                dist_sync_fn=self.dist_sync_fn, should_sync=self._to_sync, should_unsync=self._should_unsync
+                    dist_sync_fn=self.dist_sync_fn, should_sync=self._to_sync,
+                    should_unsync=self._should_unsync
             ):
+                PL_LOGGER.info("Metric::compute")
                 value = compute(*args, **kwargs)
+                PL_LOGGER.info("Metric::_squeeze_if_scalar")
                 self._computed = _squeeze_if_scalar(value)
 
+            PL_LOGGER.info("Metric::done")
             return self._computed
 
         return wrapped_func
@@ -418,7 +439,8 @@ class Metric(Module, ABC):
 
     def __getstate__(self) -> Dict[str, Any]:
         # ignore update and compute functions for pickling
-        return {k: v for k, v in self.__dict__.items() if k not in ["update", "compute", "_update_signature"]}
+        return {k: v for k, v in self.__dict__.items() if
+                k not in ["update", "compute", "_update_signature"]}
 
     def __setstate__(self, state: Dict[str, Any]) -> None:
         # manually restore update and compute functions for pickling
@@ -511,12 +533,13 @@ class Metric(Module, ABC):
             self._persistent[key] = mode
 
     def state_dict(
-        self,
-        destination: Dict[str, Any] = None,
-        prefix: str = "",
-        keep_vars: bool = False,
+            self,
+            destination: Dict[str, Any] = None,
+            prefix: str = "",
+            keep_vars: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        destination = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars)
+        destination = super().state_dict(destination=destination, prefix=prefix,
+                                         keep_vars=keep_vars)
         # Register metric states to be part of the state_dict
         for key in self._defaults:
             if not self._persistent[key]:
@@ -526,19 +549,20 @@ class Metric(Module, ABC):
                 if isinstance(current_val, Tensor):
                     current_val = current_val.detach()
                 elif isinstance(current_val, list):
-                    current_val = [cur_v.detach() if isinstance(cur_v, Tensor) else cur_v for cur_v in current_val]
+                    current_val = [cur_v.detach() if isinstance(cur_v, Tensor) else cur_v for cur_v
+                                   in current_val]
             destination[prefix + key] = deepcopy(current_val)  # type: ignore
         return destination
 
     def _load_from_state_dict(
-        self,
-        state_dict: dict,
-        prefix: str,
-        local_metadata: dict,
-        strict: bool,
-        missing_keys: List[str],
-        unexpected_keys: List[str],
-        error_msgs: List[str],
+            self,
+            state_dict: dict,
+            prefix: str,
+            local_metadata: dict,
+            strict: bool,
+            missing_keys: List[str],
+            unexpected_keys: List[str],
+            error_msgs: List[str],
     ) -> None:
         """Loads metric states from state_dict."""
 
@@ -558,10 +582,12 @@ class Metric(Module, ABC):
         _params = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
         _sign_params = self._update_signature.parameters
         filtered_kwargs = {
-            k: v for k, v in kwargs.items() if (k in _sign_params.keys() and _sign_params[k].kind not in _params)
+            k: v for k, v in kwargs.items() if
+            (k in _sign_params.keys() and _sign_params[k].kind not in _params)
         }
 
-        exists_var_keyword = any([v.kind == inspect.Parameter.VAR_KEYWORD for v in _sign_params.values()])
+        exists_var_keyword = any(
+            [v.kind == inspect.Parameter.VAR_KEYWORD for v in _sign_params.values()])
         # if no kwargs filtered, return all kwargs as default
         if not filtered_kwargs and not exists_var_keyword:
             # no kwargs in update signature -> don't return any kwargs
@@ -705,10 +731,10 @@ class CompositionalMetric(Metric):
     """Composition of two metrics with a specific operator which will be executed upon metrics compute."""
 
     def __init__(
-        self,
-        operator: Callable,
-        metric_a: Union[Metric, int, float, Tensor],
-        metric_b: Union[Metric, int, float, Tensor, None],
+            self,
+            operator: Callable,
+            metric_a: Union[Metric, int, float, Tensor],
+            metric_b: Union[Metric, int, float, Tensor, None],
     ) -> None:
         """
         Args:
@@ -733,7 +759,8 @@ class CompositionalMetric(Metric):
         else:
             self.metric_b = metric_b
 
-    def _sync_dist(self, dist_sync_fn: Optional[Callable] = None, process_group: Optional[Any] = None) -> None:
+    def _sync_dist(self, dist_sync_fn: Optional[Callable] = None,
+                   process_group: Optional[Any] = None) -> None:
         # No syncing required here. syncing will be done in metric_a and metric_b
         pass
 

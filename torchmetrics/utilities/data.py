@@ -11,14 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from typing import Any, Callable, List, Mapping, Optional, Sequence, Union
 
 import torch
 from torch import Tensor, tensor
-
 from torchmetrics.utilities.prints import rank_zero_warn
 
 METRIC_EPS = 1e-6
+PL_LOGGER = logging.getLogger('pytorch_lightning')
 
 
 def dim_zero_cat(x: Union[Tensor, List[Tensor]]) -> Tensor:
@@ -55,8 +56,8 @@ def _flatten(x: Sequence) -> list:
 
 
 def to_onehot(
-    label_tensor: Tensor,
-    num_classes: Optional[int] = None,
+        label_tensor: Tensor,
+        num_classes: Optional[int] = None,
 ) -> Tensor:
     """Converts a dense label tensor to one-hot format.
 
@@ -133,9 +134,9 @@ def to_categorical(x: Tensor, argmax_dim: int = 1) -> Tensor:
 
 
 def get_num_classes(
-    preds: Tensor,
-    target: Tensor,
-    num_classes: Optional[int] = None,
+        preds: Tensor,
+        target: Tensor,
+        num_classes: Optional[int] = None,
 ) -> int:
     """Calculates the number of classes for a given prediction and target tensor.
 
@@ -164,12 +165,12 @@ def get_num_classes(
 
 
 def apply_to_collection(
-    data: Any,
-    dtype: Union[type, tuple],
-    function: Callable,
-    *args: Any,
-    wrong_dtype: Optional[Union[type, tuple]] = None,
-    **kwargs: Any,
+        data: Any,
+        dtype: Union[type, tuple],
+        function: Callable,
+        *args: Any,
+        wrong_dtype: Optional[Union[type, tuple]] = None,
+        **kwargs: Any,
 ) -> Any:
     """Recursively applies a function to all elements of a certain dtype.
 
@@ -195,13 +196,15 @@ def apply_to_collection(
     """
     elem_type = type(data)
 
+    # PL_LOGGER.info(f"apply_to_collection::elem_type={elem_type}")
     # Breaking condition
     if isinstance(data, dtype) and (wrong_dtype is None or not isinstance(data, wrong_dtype)):
         return function(data, *args, **kwargs)
 
     # Recursively apply to collection items
     if isinstance(data, Mapping):
-        return elem_type({k: apply_to_collection(v, dtype, function, *args, **kwargs) for k, v in data.items()})
+        return elem_type(
+            {k: apply_to_collection(v, dtype, function, *args, **kwargs) for k, v in data.items()})
 
     if isinstance(data, tuple) and hasattr(data, "_fields"):  # named tuple
         return elem_type(*(apply_to_collection(d, dtype, function, *args, **kwargs) for d in data))

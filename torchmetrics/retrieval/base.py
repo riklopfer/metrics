@@ -11,17 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable, List, Optional
 
 import torch
 from torch import Tensor, tensor
-
 from torchmetrics import Metric
 from torchmetrics.utilities.checks import _check_retrieval_inputs
 from torchmetrics.utilities.data import get_group_indexes
-
 #: get_group_indexes is used to group predictions belonging to the same document
+
+PL_LOGGER = logging.getLogger('pytorch_lightning')
 
 
 class RetrievalMetric(Metric, ABC):
@@ -77,13 +78,13 @@ class RetrievalMetric(Metric, ABC):
     higher_is_better = True
 
     def __init__(
-        self,
-        empty_target_action: str = "neg",
-        ignore_index: Optional[int] = None,
-        compute_on_step: bool = True,
-        dist_sync_on_step: bool = False,
-        process_group: Optional[Any] = None,
-        dist_sync_fn: Callable = None,
+            self,
+            empty_target_action: str = "neg",
+            ignore_index: Optional[int] = None,
+            compute_on_step: bool = True,
+            dist_sync_on_step: bool = False,
+            process_group: Optional[Any] = None,
+            dist_sync_fn: Callable = None,
     ) -> None:
         super().__init__(
             compute_on_step=compute_on_step,
@@ -95,7 +96,8 @@ class RetrievalMetric(Metric, ABC):
 
         empty_target_action_options = ("error", "skip", "neg", "pos")
         if empty_target_action not in empty_target_action_options:
-            raise ValueError(f"Argument `empty_target_action` received a wrong value `{empty_target_action}`.")
+            raise ValueError(
+                f"Argument `empty_target_action` received a wrong value `{empty_target_action}`.")
 
         self.empty_target_action = empty_target_action
 
@@ -114,7 +116,8 @@ class RetrievalMetric(Metric, ABC):
             raise ValueError("Argument `indexes` cannot be None")
 
         indexes, preds, target = _check_retrieval_inputs(
-            indexes, preds, target, allow_non_binary_target=self.allow_non_binary_target, ignore_index=self.ignore_index
+            indexes, preds, target, allow_non_binary_target=self.allow_non_binary_target,
+            ignore_index=self.ignore_index
         )
 
         self.indexes.append(indexes)
@@ -133,15 +136,18 @@ class RetrievalMetric(Metric, ABC):
         target = torch.cat(self.target, dim=0)
 
         res = []
+        PL_LOGGER.info(f"getting groups")
         groups = get_group_indexes(indexes)
 
+        PL_LOGGER.info(f"iterating groups and computing metric")
         for group in groups:
             mini_preds = preds[group]
             mini_target = target[group]
 
             if not mini_target.sum():
                 if self.empty_target_action == "error":
-                    raise ValueError("`compute` method was provided with a query with no positive target.")
+                    raise ValueError(
+                        "`compute` method was provided with a query with no positive target.")
                 if self.empty_target_action == "pos":
                     res.append(tensor(1.0))
                 elif self.empty_target_action == "neg":
@@ -149,7 +155,7 @@ class RetrievalMetric(Metric, ABC):
             else:
                 # ensure list contains only float tensors
                 res.append(self._metric(mini_preds, mini_target))
-
+        PL_LOGGER.info("stacking results")
         return torch.stack([x.to(preds) for x in res]).mean() if res else tensor(0.0).to(preds)
 
     @abstractmethod
