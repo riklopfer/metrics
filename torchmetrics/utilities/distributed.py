@@ -92,9 +92,9 @@ def class_reduce(num: Tensor, denom: Tensor, weights: Tensor, class_reduction: s
 def _simple_gather_all_tensors(result: Tensor, group: Any, world_size: int) -> List[Tensor]:
     PL_LOGGER.info("simple_gather_all_tensors")
     gathered_result = [torch.zeros_like(result) for _ in range(world_size)]
-    PL_LOGGER.info(f"doing all_gather")
+    PL_LOGGER.info(f"simple_gather_all_tensors::doing all_gather ")
     torch.distributed.all_gather(gathered_result, result, group)
-    PL_LOGGER.info("done")
+    PL_LOGGER.info("simple_gather_all_tensors::done")
     return gathered_result
 
 
