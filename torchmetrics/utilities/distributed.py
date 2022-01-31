@@ -90,8 +90,11 @@ def class_reduce(num: Tensor, denom: Tensor, weights: Tensor, class_reduction: s
 
 
 def _simple_gather_all_tensors(result: Tensor, group: Any, world_size: int) -> List[Tensor]:
+    PL_LOGGER.info("simple_gather_all_tensors")
     gathered_result = [torch.zeros_like(result) for _ in range(world_size)]
+    PL_LOGGER.info(f"doing all_gather")
     torch.distributed.all_gather(gathered_result, result, group)
+    PL_LOGGER.info("done")
     return gathered_result
 
 
@@ -113,9 +116,12 @@ def gather_all_tensors(result: Tensor, group: Optional[Any] = None) -> List[Tens
         group = torch.distributed.group.WORLD
 
     # convert tensors to contiguous format
+    PL_LOGGER.info(f"Make contiguous")
     result = result.contiguous()
 
+    PL_LOGGER.info(f"Get world size")
     world_size = torch.distributed.get_world_size(group)
+    PL_LOGGER.info(f"world_size={world_size}")
     torch.distributed.barrier(group=group)
 
     # if the tensor is scalar, things are easy
